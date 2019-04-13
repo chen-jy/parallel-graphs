@@ -1,2 +1,3 @@
-# parallel-graphs
-Parallel implementations of graph algorithms
+# Parallel Graph Algorithms
+
+Practice projects for OpenMP, MPI, and CUDA.
