@@ -1,10 +1,11 @@
 #include <cstdio>
+#include <list>
 #include <omp.h>
 #include <string>
 #include <vector>
 #include "getopt.h"
 
-// Process input in an offline/online style
+// Process input in an online/offline style
 #define ONLINE 0
 #define OFFLINE 1
 
@@ -42,7 +43,7 @@ int main(int argc, char *argv[]) {
 	int N, M;
 	fscanf(input, "%d %d", &N, &M);
 
-	vector<vector<pair<int, double>>> graph(N);
+	vector<list<pair<int, double>>> graph(N);
 
 	if (mode == ONLINE) {
 		for (int i = 0; i < M; i++) {
@@ -53,9 +54,32 @@ int main(int argc, char *argv[]) {
 		}
 	}
 	else if (mode == OFFLINE) {
-		#pragma omp parallel private(tid)
+		vector<list<pair<int, double>>> gp(N);
+
+		#pragma omp parallel default(none) private(tid, gp) shared(nthreads, N, M, input, graph)
 		{
 			tid = omp_get_thread_num();
+			int nlines = M / nthreads, lnlines = nlines;
+			if (tid == nthreads - 1) {
+				lnlines = M - nlines * tid;
+			}
+
+			FILE *fd = input + tid * nlines;
+			#pragma omp for
+			for (int i = 0; i < lnlines; i++) {
+				int u, v;
+				double w;
+				fscanf(fd, "%d %d %lf", &u, &v, &w);
+				gp[u].push_back({ v, w });
+			}
+
+			// Visual Studio doesn't support custom reductions
+			#pragma omp critical
+			{
+				for (int i = 0; i < N; i++) {
+					graph[i].splice(graph[i].end(), gp[i]);
+				}
+			}
 		}
 	}
 	else exit(2);
