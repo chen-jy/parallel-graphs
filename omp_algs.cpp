@@ -8,14 +8,15 @@
 #include "getopt.h"
 
 #define INF 0x3f3f3f3f
-#define NUM_ITERATIONS 100
+#define NUM_ITERATIONS 10
 
-//#define DEBUG
+#define DEBUG
 
 using namespace std;
 
 typedef vector<vector<pair<int, double>>> AdjList;
 
+// SSSP sequential baseline
 vector<double> dijkstra_seq(AdjList graph, int source) {
 	vector<double> dist(graph.size(), INF);
 	vector<bool> vis(graph.size(), 0), inQ(graph.size(), 0);
@@ -47,8 +48,42 @@ vector<double> dijkstra_seq(AdjList graph, int source) {
 	return dist;
 }
 
+// SSSP parallel implementation 1
 vector<double> dijkstra_par(AdjList graph, int source) {
 	vector<double> dist(graph.size(), INF);
+	vector<bool> vis(graph.size(), 0), inQ(graph.size(), 0);
+	priority_queue<pair<double, int>> q;
+
+	omp_lock_t qlock;
+	omp_init_lock(&qlock);
+
+	dist[source] = 0, vis[source] = inQ[source] = 1;
+	q.push({ 0, source });
+
+	int u, v;
+	double w;
+
+	while (!q.empty()) {
+		u = q.top().second;
+		vis[u] = 1, inQ[u] = 0;
+		q.pop();
+
+		#pragma omp parallel for default(none) shared(dist, vis, inQ, q, qlock, u) private(v, w)
+		for (int i = 0; i < graph[u].size(); i++) {
+			v = graph[u][i].first, w = graph[u][i].second + dist[u];
+			if (!vis[v] && w < dist[v]) {
+				dist[v] = w;
+				if (!inQ[v]) {
+					inQ[v] = 1;
+					omp_set_lock(&qlock);
+					q.push({ -w, v });
+					omp_unset_lock(&qlock);
+				}
+			}
+		}
+	}
+
+	omp_destroy_lock(&qlock);
 	return dist;
 }
 
@@ -100,18 +135,19 @@ int main(int argc, char *argv[]) {
 
 	// Single-source shortest path (Dijkstra)
 	int source = 0;
+	vector<double> sssp_seq, sssp_par;
 
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++)
-		vector<double> sssp_seq = dijkstra_seq(graph, source);
+		sssp_seq = dijkstra_seq(graph, source);
 	time = omp_get_wtime() - time;
-	printf("Sequential SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Average sequential SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++)
-		vector<double> sssp_par = dijkstra_par(graph, source);
+		sssp_par = dijkstra_par(graph, source);
 	time = omp_get_wtime() - time;
-	printf("Parallel SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Average parallel SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	#ifdef DEBUG
 	if (sssp_seq != sssp_par) {
