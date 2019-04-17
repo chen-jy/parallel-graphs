@@ -45,6 +45,52 @@ vector<double> prim_seq(AdjMat graph) {
 	return dist;
 }
 
+// MST parallel implementation 1.1 (TODO: test this)
+vector<double> prim_par(AdjMat graph) {
+	vector<double> dist(graph.size());
+	vector<bool> vis(graph.size(), 0);
+
+	dist[0] = 0, vis[0] = 1;
+	#pragma omp parallel for default(none) shared(dist, graph) schedule(static, 8)
+	for (int i = 1; i < graph.size(); i++) {
+		dist[i] = graph[0][i]; // schedule(8) avoids false sharing
+	}
+
+	int work = graph.size() / omp_get_max_threads();
+	for (int n = 1; n < graph.size(); n++) {
+		int u = -1;
+		double w = INF;
+
+		// Visual Studio doesn't support user-defined reductions
+		#pragma omp parallel default(none) shared(u, w, dist, graph, vis)
+		{
+			int loc_u = u;
+			double loc_w = w;
+
+			#pragma omp for schedule(static, work) nowait
+			for (int i = 1; i < graph.size(); i++) {
+				if (!vis[i] && dist[i] < loc_w) {
+					loc_w = dist[i], loc_u = i;
+				}
+			}
+			#pragma omp critical
+			if (loc_w < w) {
+				w = loc_w, u = loc_u;
+			}
+		}
+
+		vis[u] = 1;
+		#pragma omp parallel for default(none) shared(dist, graph) schedule(static, 8)
+		for (int v = 1; v < graph.size(); v++) {
+			if (!vis[v]) {
+				dist[v] = min(dist[v], graph[u][v]);
+			}
+		}
+	}
+
+	return dist;
+}
+
 // MST sequential baseline 2: O((E + V) log V)
 vector<int> prim_seq_q(AdjList graph) {
 	vector<double> dist(graph.size(), INF);
