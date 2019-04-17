@@ -1,21 +1,52 @@
 #include <algorithm>
 #include <cstdio>
-#include <list>
-#include <omp.h>
+#include <omp.h> // Visual Studio's OpenMP is really outdated
 #include <queue>
 #include <string>
 #include <vector>
-#include "getopt.h"
+#include "getopt.h" // For windows (since no unistd.h)
 
 #define INF 0x3f3f3f3f
-#define NUM_ITERATIONS 10
+#define NUM_ITERATIONS 10 // Number of times to repeat an experiment
 
 using namespace std;
 
 typedef vector<vector<pair<int, double>>> AdjList;
+typedef vector<vector<double>> AdjMat;
 
-// MST sequential baseline
-vector<int> prim_seq(AdjList graph) {
+// MST sequential baseline 1: O(V^2)
+vector<double> prim_seq(AdjMat graph) {
+	vector<double> dist(graph.size());
+	vector<bool> vis(graph.size(), 0);
+
+	dist[0] = 0, vis[0] = 1;
+	for (int i = 1; i < graph.size(); i++) {
+		dist[i] = graph[0][i];
+	}
+
+	for (int n = 1; n < graph.size(); n++) {
+		int u = -1;
+		double w = INF;
+
+		for (int i = 1; i < graph.size(); i++) {
+			if (!vis[i] && dist[i] < w) {
+				w = dist[i], u = i;
+			}
+		}
+
+		vis[u] = 1;
+		for (int v = 1; v < graph.size(); v++) {
+			if (!vis[v]) {
+				dist[v] = min(dist[v], graph[u][v]);
+			}
+		}
+	}
+
+	return dist;
+}
+
+// MST sequential baseline 2: O((E + V) log V)
+vector<int> prim_seq_q(AdjList graph) {
 	vector<double> dist(graph.size(), INF);
 	vector<bool> vis(graph.size(), 0);
 	vector<int> pred(graph.size(), -1);
@@ -45,8 +76,8 @@ vector<int> prim_seq(AdjList graph) {
 	return pred;
 }
 
-// MST parallel implementation 1
-vector<int> prim_par(AdjList graph) {
+// MST parallel implementation 2.1
+vector<int> prim_par_q(AdjList graph) {
 	vector<double> dist(graph.size(), INF);
 	vector<bool> vis(graph.size(), 0);
 	vector<int> pred(graph.size(), -1);
@@ -65,14 +96,14 @@ vector<int> prim_par(AdjList graph) {
 		if (vis[u]) continue;
 		vis[u] = 1;
 
-		#pragma omp parallel for default(none) shared(dist, vis, pred, q, qlock, u)
+		#pragma omp parallel for default(none) shared(dist, vis, pred, q, qlock, u) //schedule(static, 16)
 		for (int i = 0; i < graph[u].size(); i++) {
 			int v = graph[u][i].first;
 			double w = graph[u][i].second;
 
 			if (!vis[v] && w < dist[v]) {
-				dist[v] = w, pred[v] = u;
-				omp_set_lock(&qlock);
+				dist[v] = w, pred[v] = u; // Can't avoid false sharing here
+				omp_set_lock(&qlock); // High lock contention
 				q.push({ -w, v });
 				omp_unset_lock(&qlock);
 			}
@@ -83,8 +114,8 @@ vector<int> prim_par(AdjList graph) {
 	return pred;
 }
 
-// SSSP sequential baseline
-vector<double> dijkstra_seq(AdjList graph, int source) {
+// SSSP sequential baseline 2: O((E + V) log V)
+vector<double> dijkstra_seq_q(AdjList graph, int source) {
 	vector<double> dist(graph.size(), INF);
 	vector<bool> vis(graph.size(), 0), inQ(graph.size(), 0);
 	priority_queue<pair<double, int>> q;
@@ -114,8 +145,8 @@ vector<double> dijkstra_seq(AdjList graph, int source) {
 	return dist;
 }
 
-// SSSP parallel implementation 1
-vector<double> dijkstra_par(AdjList graph, int source) {
+// SSSP parallel implementation 2.1
+vector<double> dijkstra_par_q(AdjList graph, int source) {
 	vector<double> dist(graph.size(), INF);
 	vector<bool> vis(graph.size(), 0), inQ(graph.size(), 0);
 	priority_queue<pair<double, int>> q;
@@ -131,16 +162,16 @@ vector<double> dijkstra_par(AdjList graph, int source) {
 		vis[u] = 1, inQ[u] = 0;
 		q.pop();
 
-		#pragma omp parallel for default(none) shared(dist, vis, inQ, q, qlock, u)
+		#pragma omp parallel for default(none) shared(dist, vis, inQ, q, qlock, u) //schedule(static, 16)
 		for (int i = 0; i < graph[u].size(); i++) {
 			int v = graph[u][i].first;
 			double w = graph[u][i].second + dist[u];
 
 			if (!vis[v] && w < dist[v]) {
-				dist[v] = w;
+				dist[v] = w; // Can't avoid false sharing here
 				if (!inQ[v]) {
 					inQ[v] = 1;
-					omp_set_lock(&qlock);
+					omp_set_lock(&qlock); // High lock contention
 					q.push({ -w, v });
 					omp_unset_lock(&qlock);
 				}
@@ -189,6 +220,7 @@ int main(int argc, char *argv[]) {
 
 	AdjList graph(N);
 
+	// Set up the adjacency list
 	for (int i = 0; i < M; i++) {
 		int u, v;
 		double w;
@@ -206,24 +238,24 @@ int main(int argc, char *argv[]) {
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++) {
 		#ifdef _DEBUG
-		mst_seq = prim_seq(graph);
+		mst_seq = prim_seq_q(graph);
 		#else
-		prim_seq(graph);
+		prim_seq_q(graph);
 		#endif
 	}
 	time = omp_get_wtime() - time;
-	printf("Average sequential MST time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Avg O((E+V)log(V)) seq MST time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++) {
 		#ifdef _DEBUG
-		mst_par = prim_par(graph);
+		mst_par = prim_par_q(graph);
 		#else
-		prim_par(graph);
+		prim_par_q(graph);
 		#endif
 	}
 	time = omp_get_wtime() - time;
-	printf("Average parallel MST time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Avg O((E+V)log(V)) par MST time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	#ifdef _DEBUG
 	if (mst_seq != mst_par) {
@@ -239,24 +271,24 @@ int main(int argc, char *argv[]) {
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++) {
 		#ifdef _DEBUG
-		sssp_seq = dijkstra_seq(graph, source);
+		sssp_seq = dijkstra_seq_q(graph, source);
 		#else
-		dijkstra_seq(graph, source);
+		dijkstra_seq_q(graph, source);
 		#endif
 	}
 	time = omp_get_wtime() - time;
-	printf("Average sequential SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Avg O((E+V)log(V)) seq SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	time = omp_get_wtime();
 	for (int i = 0; i < NUM_ITERATIONS; i++) {
 		#ifdef _DEBUG
-		sssp_par = dijkstra_par(graph, source);
+		sssp_par = dijkstra_par_q(graph, source);
 		#else
-		dijkstra_par(graph, source);
+		dijkstra_par_q(graph, source);
 		#endif
 	}
 	time = omp_get_wtime() - time;
-	printf("Average parallel SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
+	printf("Avg O((E+V)log(V)) par SSSP time (ms): %.6lf\n", time * 1000 / NUM_ITERATIONS);
 
 	#ifdef _DEBUG
 	if (sssp_seq != sssp_par) {
